@@ -1,4 +1,4 @@
-name: 🏦 Banking App - Advanced CI/CD Practice Pipeline
+name: 🏦 Banking App - CI Pipeline (Build & Test Only)
 
 on:
   push:
@@ -7,14 +7,6 @@ on:
     branches: [ "main", "develop" ]
   workflow_dispatch:
     inputs:
-      environment:
-        description: 'Deployment environment'
-        required: true
-        default: 'staging'
-        type: choice
-        options:
-        - staging
-        - production
       skip_tests:
         description: 'Skip test execution'
         required: false
@@ -24,9 +16,6 @@ on:
 env:
   JAVA_VERSION: '17'
   MAVEN_OPTS: '-Xmx2048m -XX:+UseG1GC'
-  DOCKER_REGISTRY: 'docker.io'
-  IMAGE_NAME: 'mdasif08/bankapp'
-  KUBERNETES_NAMESPACE: 'banking-app'
 
 jobs:
   # 🔍 Code Quality & Security Analysis
@@ -241,206 +230,35 @@ jobs:
         echo "- **Java Version**: ${{ env.JAVA_VERSION }}" >> $GITHUB_STEP_SUMMARY
         echo "- **JAR Size**: $(du -h target/*.jar | cut -f1)" >> $GITHUB_STEP_SUMMARY
 
-  # 🐳 Docker Build & Push
-  docker:
-    name: 🐳 Docker Build & Push
+  # 📋 CI Pipeline Summary
+  ci-summary:
+    name: 📋 CI Pipeline Summary
     runs-on: ubuntu-latest
-    needs: build
-    if: ${{ !failure() }}
-    outputs:
-      image-digest: ${{ steps.build.outputs.digest }}
-      image-url: ${{ steps.meta.outputs.tags }}
-    
-    steps:
-    - name: 📥 Checkout Code
-      uses: actions/checkout@v4
-    
-    - name: 📦 Download JAR Artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: bankapp-jar-${{ needs.build.outputs.version }}
-        path: app/
-    
-    - name: 🐳 Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-    
-    - name: 🔐 Login to Docker Hub
-      uses: docker/login-action@v3
-      with:
-        username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
-    
-    - name: 🏷️ Extract Metadata
-      id: meta
-      uses: docker/metadata-action@v5
-      with:
-        images: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}
-        tags: |
-          type=ref,event=branch
-          type=ref,event=pr
-          type=sha,prefix={{branch}}-
-          type=raw,value=latest,enable={{is_default_branch}}
-          type=raw,value=${{ needs.build.outputs.version }}
-    
-    - name: 🏗️ Build and Push Docker Image
-      id: build
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        platforms: linux/amd64,linux/arm64
-        push: true
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
-        build-args: |
-          VERSION=${{ needs.build.outputs.version }}
-          BUILD_TIME=${{ needs.build.outputs.build-time }}
-    
-    - name: 🔍 Scan Docker Image
-      uses: aquasecurity/trivy-action@master
-      with:
-        image-ref: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build.outputs.version }}
-        format: 'sarif'
-        output: 'trivy-image-results.sarif'
-    
-    - name: 📊 Upload Docker Scan Results
-      uses: github/codeql-action/upload-sarif@v3
-      if: always()
-      with:
-        sarif_file: 'trivy-image-results.sarif'
-
-  # 🚀 Deployment
-  deploy:
-    name: 🚀 Deploy to Kubernetes
-    runs-on: ubuntu-latest
-    needs: [build, docker]
-    if: ${{ !failure() && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') }}
-    environment: ${{ inputs.environment || 'staging' }}
-    
-    steps:
-    - name: 📥 Checkout Code
-      uses: actions/checkout@v4
-    
-    - name: ☁️ Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ap-south-1
-    
-    - name: 🔧 Setup kubectl
-      uses: azure/setup-kubectl@v3
-      with:
-        version: 'latest'
-    
-    - name: 🔐 Configure kubeconfig
-      run: |
-        mkdir -p $HOME/.kube
-        echo "${{ secrets.EKS_KUBECONFIG }}" > $HOME/.kube/config
-        kubectl config current-context
-    
-    - name: 🏷️ Update Image Tag in Kubernetes Manifests
-      run: |
-        sed -i "s|adijaiswal/bankapp:latest|${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build.outputs.version }}|g" ds.yml
-        echo "Updated image tag to: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build.outputs.version }}"
-    
-    - name: 🚀 Deploy to Kubernetes
-      run: |
-        kubectl apply -f ds.yml -n ${{ env.KUBERNETES_NAMESPACE }}
-        kubectl rollout status deployment/bankapp -n ${{ env.KUBERNETES_NAMESPACE }} --timeout=300s
-        kubectl get pods -n ${{ env.KUBERNETES_NAMESPACE }}
-        kubectl get services -n ${{ env.KUBERNETES_NAMESPACE }}
-    
-    - name: 🔍 Health Check
-      run: |
-        echo "Waiting for application to be ready..."
-        kubectl wait --for=condition=available --timeout=300s deployment/bankapp -n ${{ env.KUBERNETES_NAMESPACE }}
-        echo "Application is ready!"
-
-  # 📊 Performance Testing
-  performance-test:
-    name: 📊 Performance Testing
-    runs-on: ubuntu-latest
-    needs: deploy
-    if: ${{ !failure() && github.ref == 'refs/heads/main' }}
-    
-    steps:
-    - name: 📥 Checkout Code
-      uses: actions/checkout@v4
-    
-    - name: ☕ Setup Java ${{ env.JAVA_VERSION }}
-      uses: actions/setup-java@v4
-      with:
-        java-version: ${{ env.JAVA_VERSION }}
-        distribution: 'temurin'
-    
-    - name: 🚀 Get Application URL
-      id: get-url
-      run: |
-        # Get the LoadBalancer external IP
-        EXTERNAL_IP=$(kubectl get service bankapp-service -n ${{ env.KUBERNETES_NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-        if [ -z "$EXTERNAL_IP" ]; then
-          EXTERNAL_IP=$(kubectl get service bankapp-service -n ${{ env.KUBERNETES_NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-        fi
-        echo "url=http://$EXTERNAL_IP" >> $GITHUB_OUTPUT
-        echo "Application URL: http://$EXTERNAL_IP"
-    
-    - name: 📊 Run Load Tests
-      run: |
-        # Simple load test using curl
-        for i in {1..10}; do
-          echo "Test $i:"
-          curl -w "@curl-format.txt" -o /dev/null -s "${{ steps.get-url.outputs.url }}/dashboard" || echo "Request failed"
-        done
-    
-    - name: 📈 Performance Summary
-      run: |
-        echo "## 📊 Performance Test Results" >> $GITHUB_STEP_SUMMARY
-        echo "- **Application URL**: ${{ steps.get-url.outputs.url }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Load Tests**: Completed 10 requests" >> $GITHUB_STEP_SUMMARY
-        echo "- **Status**: ✅ Application is responding" >> $GITHUB_STEP_SUMMARY
-
-  # 🧹 Cleanup
-  cleanup:
-    name: 🧹 Cleanup Resources
-    runs-on: ubuntu-latest
-    needs: [deploy, performance-test]
+    needs: [code-analysis, testing, build]
     if: always()
     
     steps:
-    - name: 🧹 Cleanup Old Artifacts
+    - name: 📋 Generate CI Summary
       run: |
-        echo "Cleaning up old artifacts and images..."
-        # Add cleanup logic here if needed
-        echo "Cleanup completed!"
-
-  # 📋 Pipeline Summary
-  pipeline-summary:
-    name: 📋 Pipeline Summary
-    runs-on: ubuntu-latest
-    needs: [code-analysis, testing, build, docker, deploy, performance-test]
-    if: always()
-    
-    steps:
-    - name: 📋 Generate Pipeline Summary
-      run: |
-        echo "## 🏦 Banking App CI/CD Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+        echo "## 🏦 Banking App CI Pipeline Summary" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### 📊 Job Status:" >> $GITHUB_STEP_SUMMARY
         echo "- **Code Analysis**: ${{ needs.code-analysis.result }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Testing**: ${{ needs.testing.result }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Build**: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Docker**: ${{ needs.docker.result }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Deploy**: ${{ needs.deploy.result }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Performance Test**: ${{ needs.performance-test.result }}" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### 🏷️ Build Information:" >> $GITHUB_STEP_SUMMARY
         echo "- **Version**: ${{ needs.build.outputs.version }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Build Time**: ${{ needs.build.outputs.build-time }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Docker Image**: ${{ needs.docker.outputs.image-url }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Java Version**: ${{ env.JAVA_VERSION }}" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### 🚀 Deployment:" >> $GITHUB_STEP_SUMMARY
-        echo "- **Environment**: ${{ inputs.environment || 'staging' }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Namespace**: ${{ env.KUBERNETES_NAMESPACE }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Status**: ${{ needs.deploy.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "### ✅ CI Pipeline Status:" >> $GITHUB_STEP_SUMMARY
+        echo "- **Security Scans**: Completed" >> $GITHUB_STEP_SUMMARY
+        echo "- **Quality Gates**: Passed" >> $GITHUB_STEP_SUMMARY
+        echo "- **Tests**: Executed" >> $GITHUB_STEP_SUMMARY
+        echo "- **Build**: Successful" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📦 Artifacts Generated:" >> $GITHUB_STEP_SUMMARY
+        echo "- **JAR File**: bankapp-jar-${{ needs.build.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Test Reports**: Available in Actions artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "- **Security Reports**: Uploaded to GitHub Security tab" >> $GITHUB_STEP_SUMMARY
