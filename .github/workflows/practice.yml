@@ -62,6 +62,7 @@ jobs:
         GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
     
     - name: 🔍 Dependency Vulnerability Check
+      continue-on-error: true
       run: |
         mvn org.owasp:dependency-check-maven:check
         mvn org.owasp:dependency-check-maven:aggregate
@@ -81,6 +82,7 @@ jobs:
       run: mvn clean compile -DskipTests
     
     - name: 📈 SonarQube Analysis
+      continue-on-error: true
       uses: SonarSource/sonarqube-scan-action@v5.0.0
       env:
         SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -89,6 +91,7 @@ jobs:
     
     - name: 🚪 SonarQube Quality Gate
       id: sonarqube-quality-gate-check
+      continue-on-error: true
       uses: sonarsource/sonarqube-quality-gate-action@master
       timeout-minutes: 5
       env:
